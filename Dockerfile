@@ -17,7 +17,12 @@ RUN pip install -r requirements.txt \
 
 COPY app ./app
 
-RUN useradd --system --uid 10001 --no-create-home api
+# GHunt writes its session under $HOME/.malfrats; give the service user a home.
+RUN useradd --system --uid 10001 --create-home --home-dir /home/api api \
+ && mkdir -p /home/api/.malfrats/ghunt \
+ && chown -R api:api /home/api
+ENV HOME=/home/api \
+    GHUNT_CREDS_PATH=/home/api/.malfrats/ghunt/creds.m
 USER api
 
 EXPOSE 8000

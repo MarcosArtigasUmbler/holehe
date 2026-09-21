@@ -5,3 +5,5 @@ pydantic==2.10.4
 requests==2.32.3
 # holehe pinned to a specific upstream commit (v1.61 + latest modules on master)
 holehe @ git+https://github.com/megadose/holehe.git@14da70f588538936b20d238783c5e28a0772a2b3
+# GHunt: public Google-account enrichment, pinned to v2.3.4 (AGPL-3.0)
+ghunt @ git+https://github.com/mxrch/GHunt.git@5ee893929c51c7a8a665b199bbae04ce85a662b4

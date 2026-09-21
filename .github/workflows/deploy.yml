@@ -45,6 +45,7 @@ jobs:
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           API_KEY: ${{ secrets.API_KEY }}
+          GHUNT_CREDS_B64: ${{ secrets.GHUNT_CREDS_B64 }}
           HOST_PORT: ${{ vars.HOST_PORT || '8091' }}
           MAX_CONCURRENT_SCANS: ${{ vars.MAX_CONCURRENT_SCANS || '4' }}
           HOLEHE_TIMEOUT: ${{ vars.HOLEHE_TIMEOUT || '10' }}
@@ -52,7 +53,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE,PROJECT,GHCR_READ_TOKEN,GHCR_USER,API_KEY,HOST_PORT,MAX_CONCURRENT_SCANS,HOLEHE_TIMEOUT
+          envs: IMAGE,PROJECT,GHCR_READ_TOKEN,GHCR_USER,API_KEY,GHUNT_CREDS_B64,HOST_PORT,MAX_CONCURRENT_SCANS,HOLEHE_TIMEOUT
           script: |
             set -e
 
@@ -88,6 +89,7 @@ jobs:
               --restart unless-stopped \
               -p "127.0.0.1:${HOST_PORT}:8000" \
               -e API_KEY="$API_KEY" \
+              -e GHUNT_CREDS_B64="$GHUNT_CREDS_B64" \
               -e MAX_CONCURRENT_SCANS="$MAX_CONCURRENT_SCANS" \
               -e HOLEHE_TIMEOUT="$HOLEHE_TIMEOUT" \
               --log-opt max-size=10m --log-opt max-file=3 \

@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app import scanner
+from app import scanner, ghunt_probe
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
@@ -46,6 +46,7 @@ class CheckRequest(BaseModel):
     no_password_recovery: bool = Field(False, description="Pula sites que disparam e-mail de recuperação de senha")
     only_used: bool = Field(False, description="Retorna apenas os sites onde o e-mail existe")
     modules: list[str] | None = Field(None, description="Restringe a estes módulos (ver /modules)")
+    include_google: bool = Field(True, description="Inclui dados públicos da conta Google via GHunt (só útil para @gmail.com)")
 
 
 def _validate_email(email: str) -> str:
@@ -62,7 +63,7 @@ async def _do_scan(req: CheckRequest):
         if unknown:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"unknown_modules": unknown})
     async with _scan_slots:
-        result = await asyncio.to_thread(
+        holehe_task = asyncio.to_thread(
             scanner.scan,
             email,
             req.timeout,
@@ -70,8 +71,17 @@ async def _do_scan(req: CheckRequest):
             req.modules,
             MODULE_CONCURRENCY,
         )
+        # GHunt runs concurrently so the caller gets both in one request.
+        if req.include_google and ghunt_probe.is_configured():
+            google_task = asyncio.to_thread(ghunt_probe.probe, email)
+            result, google = await asyncio.gather(holehe_task, google_task)
+        else:
+            result = await holehe_task
+            google = ghunt_probe.probe(email) if req.include_google else {"enabled": False, "reason": "disabled by request"}
+
     if req.only_used:
         result["results"] = [r for r in result["results"] if r["exists"]]
+    result["google"] = google
     return result
 
 
@@ -96,7 +106,14 @@ async def check_get(
     timeout: float = Query(DEFAULT_TIMEOUT, ge=1, le=60),
     no_password_recovery: bool = False,
     only_used: bool = False,
+    include_google: bool = True,
 ):
     return await _do_scan(
-        CheckRequest(email=email, timeout=timeout, no_password_recovery=no_password_recovery, only_used=only_used)
+        CheckRequest(
+            email=email,
+            timeout=timeout,
+            no_password_recovery=no_password_recovery,
+            only_used=only_used,
+            include_google=include_google,
+        )
     )
