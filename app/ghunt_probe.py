@@ -92,6 +92,80 @@ def _dt(value: Any) -> str | None:
     return value.isoformat() + "Z" if isinstance(value, datetime) else None
 
 
+def _maps_contrib_urls(gaia_id: str) -> dict[str, str]:
+    base = f"https://www.google.com/maps/contrib/{gaia_id}"
+    return {"profile": base, "reviews": f"{base}/reviews", "photos": f"{base}/photos"}
+
+
+async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
+    """Public photos the account contributed to Google Maps.
+
+    Each photo has a URL, a real capture date and the place it was taken. The
+    oldest photo date is a strong 'account existed by' floor. This parses
+    Google's internal locationhistory/mas response, so it is guarded field by
+    field and degrades to an empty list if Google changes the format.
+    """
+    import json as _json
+    from datetime import datetime
+
+    from ghunt import globals as gb
+
+    photos: list[dict[str, Any]] = []
+    token = ""
+    pages = 0
+    while True:
+        if token:
+            pb = gb.config.templates["gmaps_pb"]["photos"]["page"].format(gaia_id, token)
+        else:
+            pb = gb.config.templates["gmaps_pb"]["photos"]["first"].format(gaia_id)
+        req = await client.get(
+            f"https://www.google.com/locationhistory/preview/mas?authuser=0&hl=en&gl=us&pb={pb}"
+        )
+        if req.status_code != 200:
+            break
+        try:
+            data = _json.loads(req.text[5:])
+        except Exception:
+            break
+        if len(data) <= 22 or not data[22]:
+            break
+        block = data[22]
+        items = block[1] if len(block) > 1 else None
+        if not items:
+            break
+        for it in items:
+            try:
+                url = it[0][6][0].split("=")[0]
+            except Exception:
+                url = None
+            date_iso = None
+            try:
+                d = it[0][21][6][8]
+                date_iso = datetime(d[0], d[1], d[2], d[3] if len(d) > 3 and d[3] else 0).isoformat() + "Z"
+            except Exception:
+                pass
+            place = None
+            try:
+                if len(it) > 1 and len(it[1]) > 2:
+                    place = it[1][2]
+            except Exception:
+                pass
+            if url:
+                photos.append({"url": url, "date": date_iso, "place": place})
+        pages += 1
+        token = block[3] if len(block) > 3 and block[3] else ""
+        if not token or pages >= 10 or len(photos) >= cap:
+            break
+
+    dates = [p["date"] for p in photos if p["date"]]
+    return {
+        "count": len(photos),
+        "oldest_date": min(dates) if dates else None,
+        "newest_date": max(dates) if dates else None,
+        "items": photos[:cap],
+    }
+
+
 async def _play_games(creds, client, email: str) -> dict[str, Any] | None:
     """Public Play Games data. The oldest unlocked achievement is the strongest
     age floor GHunt exposes: it proves the account existed at least by that date."""
@@ -209,17 +283,25 @@ async def _probe(email: str) -> dict[str, Any]:
             },
         }
 
-        # Maps: this GHunt version returns aggregate counts only, not per-review dates.
+        # Maps: aggregate counts, public contributor URLs, and contributed photos
+        # (each with a real capture date -> the oldest is a strong age floor).
+        # Per-review extraction is not included: Google changed that response
+        # shape and it no longer parses reliably. The reviews contributor page
+        # URL below lets a consumer open the reviews directly.
+        maps: dict[str, Any] = {"contributions_url": _maps_contrib_urls(person.personId)}
         try:
             err, stats = await gmaps.get_reviews(client, person.personId)
             if not err and stats:
-                result["maps"] = {
-                    "reviews": stats.get("Reviews", 0),
-                    "ratings": stats.get("Ratings", 0),
-                    "photos": stats.get("Photos", 0),
-                }
+                maps["reviews"] = stats.get("Reviews", 0)
+                maps["ratings"] = stats.get("Ratings", 0)
+                maps["photos"] = stats.get("Photos", 0)
         except Exception as exc:
-            result["maps"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+            maps["stats_error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        try:
+            maps["contributed_photos"] = await _maps_photos(client, person.personId)
+        except Exception as exc:
+            maps["contributed_photos"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+        result["maps"] = maps
 
         try:
             result["play_games"] = await _play_games(creds, client, email)
@@ -245,6 +327,9 @@ async def _probe(email: str) -> dict[str, Any]:
         for ev in (cal.get("events") or []):
             if ev.get("start"):
                 candidates.append(datetime.fromisoformat(ev["start"].rstrip("Z")))
+        photos = (result.get("maps") or {}).get("contributed_photos") or {}
+        if isinstance(photos, dict) and photos.get("oldest_date"):
+            candidates.append(datetime.fromisoformat(photos["oldest_date"].rstrip("Z")))
         result["account_existed_at_least_since"] = _dt(min(candidates)) if candidates else None
 
         return result

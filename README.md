@@ -64,12 +64,21 @@ O bloco `google` do `/check` é preenchido pelo [GHunt](https://github.com/mxrch
 e só traz dados para contas Google (útil quando o e-mail é `@gmail.com`). Ele roda em
 paralelo com o holehe, então não custa um request a mais.
 
-O que ele devolve, quando há perfil público: Gaia ID, data da última edição do perfil,
-se há foto de perfil personalizada, serviços Google ativos e a contagem de reviews/fotos
-no Maps. **Não existe data de criação da conta**; o Google não expõe isso. O sinal com data
-mais próximo de idade é `last_profile_edit`, que é um piso fraco (a conta existia ao menos
-naquela data). Para uma estimativa de idade mais forte, combine com a data do vazamento mais
-antigo em que o e-mail aparece (ex.: Have I Been Pwned).
+O que ele devolve, quando há perfil público: Gaia ID, última edição do perfil, foto de
+perfil e capa, user types, serviços Google ativos, dados do Google Chat, Play Games (com
+datas de conquistas) e dados do Maps. **Não existe data de criação da conta**; o Google não
+expõe isso.
+
+O campo `account_existed_at_least_since` é o piso de idade: a data mais antiga entre todas as
+evidências datadas (fotos do Maps, conquistas do Play Games, eventos de agenda, edição de
+perfil). A conta comprovadamente já existia nessa data. O sinal mais forte costuma ser a
+**data da foto mais antiga contribuída ao Google Maps** (`maps.contributed_photos.oldest_date`),
+que frequentemente é de vários anos atrás.
+
+O bloco `maps` traz: contagens, as URLs públicas de contribuição (`contributions_url`, incluindo
+a página de reviews) e `contributed_photos` com URL, data e local de cada foto pública. A
+extração review-a-review não é incluída: o Google mudou esse formato e ele não parseia de forma
+confiável; use a URL da página de reviews para vê-las.
 
 ### Autenticação do GHunt (obrigatória para o bloco vir preenchido)
 
