@@ -41,7 +41,8 @@ jobs:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1
         env:
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          # PAT opcional; sem ele o GITHUB_TOKEN desta execucao puxa a imagem
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           API_KEY: ${{ secrets.API_KEY }}
           HOST_PORT: ${{ vars.HOST_PORT || '8091' }}
@@ -65,7 +66,7 @@ jobs:
             fi
 
             if [ -n "$GHCR_READ_TOKEN" ]; then
-              # Private package: auth via temporary config (avoids TTY credential helper issues)
+              # Auth via temporary config (avoids TTY credential helper issues)
               DIR=$(mktemp -d)
               AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
               cat > "$DIR/config.json" <<CONF
