@@ -97,6 +97,73 @@ def _maps_contrib_urls(gaia_id: str) -> dict[str, str]:
     return {"profile": base, "reviews": f"{base}/reviews", "photos": f"{base}/photos"}
 
 
+# Current (2026) Maps "mas" reviews payload. {0}=gaia id. GHunt's own template is
+# stale and returns no reviews; this one was recovered from the live Maps UI and
+# works without a session token. The response is Google-internal, so it is parsed
+# by scanning for microsecond epoch timestamps rather than by fixed indices.
+_REVIEWS_PB = (
+    "!1s{0}!2m3!1s!7e81!15i14414!6m2!4b1!7b1!10m5!1b1!5b1!9m1!1e3!11b1"
+    "!14m60!1m49!1m5!1m4!1e1!1e3!1e2!1e4!3m5!2m4!3m3!1m2!1i260!2i365!4m1!3i10!10b1"
+    "!11m33!1m3!1e1!2b0!3e3!1m3!1e2!2b1!3e2!1m3!1e2!2b0!3e3!1m3!1e8!2b0!3e3!1m3!1e10!2b0!3e3"
+    "!1m3!1e10!2b1!3e2!1m3!1e10!2b0!3e4!1m3!1e9!2b1!3e2!2b1!2m5!1e1!1e4!1e5!1e3!1e2!3b1!4b1!5m1!1e1"
+    "!17m28!1m6!1m2!1i0!2i0!2m2!1i530!2i768!1m6!1m2!1i974!2i0!2m2!1i1024!2i768!1m6!1m2!1i0!2i0!2m2!1i1024!2i20"
+    "!1m6!1m2!1i0!2i748!2m2!1i1024!2i768!41m14!1i10!2m9!2b1!3b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!7m2!1m1!1e1"
+)
+
+
+def _scan_epoch_micros(obj: Any) -> list[int]:
+    """Collect ints that look like microsecond epochs between ~2005 and ~2027."""
+    found: list[int] = []
+
+    def rec(o: Any) -> None:
+        if isinstance(o, bool):
+            return
+        if isinstance(o, int):
+            if 1_100_000_000_000_000 <= o <= 1_830_000_000_000_000:
+                found.append(o)
+        elif isinstance(o, list):
+            for v in o:
+                rec(v)
+        elif isinstance(o, dict):
+            for v in o.values():
+                rec(v)
+
+    rec(obj)
+    return found
+
+
+async def _maps_reviews(client, gaia_id: str) -> dict[str, Any]:
+    """Oldest/newest public Maps review dates for the account.
+
+    Each review carries a microsecond creation timestamp; the oldest is a strong
+    'account existed by' floor. Only dates are extracted (not review text), and
+    the parse degrades to empty if Google changes the response.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    pb = _REVIEWS_PB.format(gaia_id)
+    req = await client.get(
+        f"https://www.google.com/locationhistory/preview/mas?authuser=0&hl=en&gl=us&pb={pb}"
+    )
+    if req.status_code != 200:
+        return {"error": f"status {req.status_code}"}
+    try:
+        data = _json.loads(req.text[5:])
+    except Exception as exc:
+        return {"error": f"parse: {type(exc).__name__}"}
+
+    micros = _scan_epoch_micros(data)
+    if not micros:
+        return {"count_with_dates": 0, "oldest_date": None, "newest_date": None}
+    to_iso = lambda m: datetime.fromtimestamp(m / 1_000_000, tz=timezone.utc).replace(tzinfo=None, microsecond=0).isoformat() + "Z"
+    return {
+        "count_with_dates": len(micros),
+        "oldest_date": to_iso(min(micros)),
+        "newest_date": to_iso(max(micros)),
+    }
+
+
 async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
     """Public photos the account contributed to Google Maps.
 
@@ -301,6 +368,10 @@ async def _probe(email: str) -> dict[str, Any]:
             maps["contributed_photos"] = await _maps_photos(client, person.personId)
         except Exception as exc:
             maps["contributed_photos"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+        try:
+            maps["reviews_dates"] = await _maps_reviews(client, person.personId)
+        except Exception as exc:
+            maps["reviews_dates"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
         result["maps"] = maps
 
         try:
@@ -327,9 +398,11 @@ async def _probe(email: str) -> dict[str, Any]:
         for ev in (cal.get("events") or []):
             if ev.get("start"):
                 candidates.append(datetime.fromisoformat(ev["start"].rstrip("Z")))
-        photos = (result.get("maps") or {}).get("contributed_photos") or {}
-        if isinstance(photos, dict) and photos.get("oldest_date"):
-            candidates.append(datetime.fromisoformat(photos["oldest_date"].rstrip("Z")))
+        maps_block = result.get("maps") or {}
+        for sub in ("contributed_photos", "reviews_dates"):
+            blk = maps_block.get(sub) or {}
+            if isinstance(blk, dict) and blk.get("oldest_date"):
+                candidates.append(datetime.fromisoformat(blk["oldest_date"].rstrip("Z")))
         result["account_existed_at_least_since"] = _dt(min(candidates)) if candidates else None
 
         return result

@@ -75,10 +75,12 @@ perfil). A conta comprovadamente já existia nessa data. O sinal mais forte cost
 **data da foto mais antiga contribuída ao Google Maps** (`maps.contributed_photos.oldest_date`),
 que frequentemente é de vários anos atrás.
 
-O bloco `maps` traz: contagens, as URLs públicas de contribuição (`contributions_url`, incluindo
-a página de reviews) e `contributed_photos` com URL, data e local de cada foto pública. A
-extração review-a-review não é incluída: o Google mudou esse formato e ele não parseia de forma
-confiável; use a URL da página de reviews para vê-las.
+O bloco `maps` traz: contagens, as URLs públicas de contribuição (`contributions_url`),
+`contributed_photos` com URL, data e local de cada foto pública, e `reviews_dates` com a data
+da review mais antiga e mais recente (`oldest_date`/`newest_date`). As datas de fotos e reviews
+alimentam `account_existed_at_least_since`, então contas ativas no Maps costumam render um piso
+de idade de vários anos atrás. O texto das reviews não é retornado; use a URL da página de
+reviews em `contributions_url` para lê-las.
 
 ### Autenticação do GHunt (obrigatória para o bloco vir preenchido)
 
