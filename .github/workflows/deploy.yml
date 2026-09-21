@@ -64,14 +64,19 @@ jobs:
               exit 1
             fi
 
-            # Auth with GHCR via temporary config (avoids TTY credential helper issues)
-            DIR=$(mktemp -d)
-            AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
-            cat > "$DIR/config.json" <<CONF
+            if [ -n "$GHCR_READ_TOKEN" ]; then
+              # Private package: auth via temporary config (avoids TTY credential helper issues)
+              DIR=$(mktemp -d)
+              AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
+              cat > "$DIR/config.json" <<CONF
             {"auths":{"ghcr.io":{"auth":"$AUTH"}}}
             CONF
-            DOCKER_CONFIG="$DIR" docker pull "$IMAGE:latest"
-            rm -rf "$DIR"
+              DOCKER_CONFIG="$DIR" docker pull "$IMAGE:latest"
+              rm -rf "$DIR"
+            else
+              # No token: the GHCR package must be public
+              docker pull "$IMAGE:latest"
+            fi
 
             # Replace the previous container
             docker stop "$PROJECT" 2>/dev/null || true
