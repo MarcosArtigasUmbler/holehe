@@ -1,0 +1,108 @@
+name: Build & Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PROJECT: holehe-api
+
+jobs:
+  build-and-deploy:
+    name: Build image & deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/${PROJECT}" >> "$GITHUB_ENV"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          API_KEY: ${{ secrets.API_KEY }}
+          HOST_PORT: ${{ vars.HOST_PORT || '8091' }}
+          MAX_CONCURRENT_SCANS: ${{ vars.MAX_CONCURRENT_SCANS || '4' }}
+          HOLEHE_TIMEOUT: ${{ vars.HOLEHE_TIMEOUT || '10' }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: IMAGE,PROJECT,GHCR_READ_TOKEN,GHCR_USER,API_KEY,HOST_PORT,MAX_CONCURRENT_SCANS,HOLEHE_TIMEOUT
+          script: |
+            set -e
+
+            IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+
+            # Refuse to deploy on a host port already used by another container
+            CLASH=$(docker ps --format '{{.Names}} {{.Ports}}' | grep -E "(:|^)${HOST_PORT}->" | grep -v "^${PROJECT} " || true)
+            if [ -n "$CLASH" ]; then
+              echo "::error::Host port ${HOST_PORT} is already used by: ${CLASH}. Set the HOST_PORT repository variable to a free port."
+              exit 1
+            fi
+
+            # Auth with GHCR via temporary config (avoids TTY credential helper issues)
+            DIR=$(mktemp -d)
+            AUTH=$(printf '%s:%s' "$GHCR_USER" "$GHCR_READ_TOKEN" | base64 -w0)
+            cat > "$DIR/config.json" <<CONF
+            {"auths":{"ghcr.io":{"auth":"$AUTH"}}}
+            CONF
+            DOCKER_CONFIG="$DIR" docker pull "$IMAGE:latest"
+            rm -rf "$DIR"
+
+            # Replace the previous container
+            docker stop "$PROJECT" 2>/dev/null || true
+            docker rm "$PROJECT" 2>/dev/null || true
+
+            docker run -d \
+              --name "$PROJECT" \
+              --restart unless-stopped \
+              -p "127.0.0.1:${HOST_PORT}:8000" \
+              -e API_KEY="$API_KEY" \
+              -e MAX_CONCURRENT_SCANS="$MAX_CONCURRENT_SCANS" \
+              -e HOLEHE_TIMEOUT="$HOLEHE_TIMEOUT" \
+              --log-opt max-size=10m --log-opt max-file=3 \
+              "$IMAGE:latest"
+
+            # Wait for the container's own HEALTHCHECK to pass
+            for i in $(seq 1 20); do
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$PROJECT" 2>/dev/null || echo starting)
+              [ "$STATUS" = "healthy" ] && break
+              if [ "$STATUS" = "unhealthy" ]; then
+                docker logs --tail 50 "$PROJECT"
+                echo "::error::Container is unhealthy"
+                exit 1
+              fi
+              sleep 3
+            done
+            [ "$STATUS" = "healthy" ] || { docker logs --tail 50 "$PROJECT"; echo "::error::Container did not become healthy in time"; exit 1; }
+
+            curl -fsS "http://127.0.0.1:${HOST_PORT}/health"
+            echo
+
+            docker image prune -f
+
+            echo "Deploy complete: $PROJECT on 127.0.0.1:${HOST_PORT} -> https://holehe.artigas.app"

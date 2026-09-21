@@ -1,0 +1,7 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+# imported (but unused) by holehe/modules/social_media/facebook.py, not declared upstream
+requests==2.32.3
+# holehe pinned to a specific upstream commit (v1.61 + latest modules on master)
+holehe @ git+https://github.com/megadose/holehe.git@14da70f588538936b20d238783c5e28a0772a2b3

@@ -1,0 +1,15 @@
+services:
+  holehe-api:
+    build: .
+    image: holehe-api:local
+    container_name: holehe-api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MAX_CONCURRENT_SCANS: ${MAX_CONCURRENT_SCANS:-4}
+      HOLEHE_TIMEOUT: ${HOLEHE_TIMEOUT:-10}
+      HOLEHE_MODULE_CONCURRENCY: ${HOLEHE_MODULE_CONCURRENCY:-50}
