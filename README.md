@@ -76,11 +76,28 @@ perfil). A conta comprovadamente já existia nessa data. O sinal mais forte cost
 que frequentemente é de vários anos atrás.
 
 O bloco `maps` traz: contagens, as URLs públicas de contribuição (`contributions_url`),
-`contributed_photos` com URL, data e local de cada foto pública, e `reviews_dates` com a data
-da review mais antiga e mais recente (`oldest_date`/`newest_date`). As datas de fotos e reviews
-alimentam `account_existed_at_least_since`, então contas ativas no Maps costumam render um piso
-de idade de vários anos atrás. O texto das reviews não é retornado; use a URL da página de
-reviews em `contributions_url` para lê-las.
+`contributed_photos` com URL, data e local de cada foto pública, `reviews_dates` com a data
+da review mais antiga e mais recente (`oldest_date`/`newest_date`), e `location`. As datas de
+fotos e reviews alimentam `account_existed_at_least_since`, então contas ativas no Maps costumam
+render um piso de idade de vários anos atrás. O texto das reviews não é retornado; use a URL da
+página de reviews em `contributions_url` para lê-las.
+
+### `location` (estimativa grosseira para antifraude)
+
+Agrega os lugares por trás das reviews e fotos em **país, estado/região e cidade**, por
+frequência. É um sinal de consistência de localização para validar cadastros, não uma forma de
+localizar a pessoa: **não retorna latitude/longitude nem endereços**.
+
+- `country`, `region`, `city`: o local principal, escolhido de forma aninhada (país mais comum,
+  depois a região mais comum dentro dele, depois a cidade), para que viagens ao exterior não
+  tornem o local principal incoerente.
+- `countries`, `regions`, `cities`: as 5 mais frequentes de cada, globais, então viagens e
+  segundas cidades continuam visíveis.
+- `based_on_places`: quantos lugares entraram na conta.
+
+Exemplo: `country: "Brazil", region: "RS", city: "Porto Alegre"`, com `countries` listando também
+Uruguay e Argentina de viagens. Um cadastro que diz ser de um país diferente do `country` aqui é
+um sinal de inconsistência.
 
 ### Autenticação do GHunt (obrigatória para o bloco vir preenchido)
 

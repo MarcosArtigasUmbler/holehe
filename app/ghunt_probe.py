@@ -132,6 +132,83 @@ def _scan_epoch_micros(obj: Any) -> list[int]:
     return found
 
 
+def _extract_addresses(obj: Any) -> list[str]:
+    """Collect address-like strings (>=2 commas, contains a digit)."""
+    found: list[str] = []
+
+    def rec(o: Any) -> None:
+        if isinstance(o, str):
+            if 6 < len(o) < 200 and o.count(",") >= 2 and any(c.isdigit() for c in o):
+                found.append(o)
+        elif isinstance(o, list):
+            for v in o:
+                rec(v)
+        elif isinstance(o, dict):
+            for v in o.values():
+                rec(v)
+
+    rec(obj)
+    return found
+
+
+def _parse_address(addr: str) -> dict[str, str | None]:
+    """Best-effort city/region/country from a Google address string, e.g.
+    'Praiamar Shopping Center, R. Alexandre Martins, 80 - Aparecida, Santos - SP, 11025-203, Brazil'."""
+    import re
+
+    parts = [p.strip() for p in addr.split(",") if p.strip()]
+    country = parts[-1] if parts else None
+    city = region = None
+    # Common "City - ST" segment (e.g. "Santos - SP")
+    for seg in parts:
+        m = re.match(r"^(.+?)\s*[-–]\s*([A-Z]{2})$", seg)
+        if m:
+            city, region = m.group(1).strip(), m.group(2)
+            break
+    if city is None and len(parts) >= 2:
+        # Fallback: the segment before the country (or postal code) is often the city.
+        cand = parts[-2]
+        cand = re.sub(r"\b\d[\d-]{3,}\b", "", cand).strip(" ,-")
+        city = cand or None
+    return {"city": city, "region": region, "country": country}
+
+
+def _aggregate_location(addresses: list[str]) -> dict[str, Any]:
+    """Coarse location estimate from the addresses of places the account
+    contributed to. City/region/country only, by frequency. No coordinates and
+    no raw addresses are returned: this is a location-consistency signal for
+    fraud checks, not a way to pinpoint a person.
+
+    The headline country/region/city is nested (top country, then top region
+    within it, then top city within that) so travel abroad does not make the
+    primary location inconsistent. The breakdown lists stay global so occasional
+    other locations are still visible."""
+    from collections import Counter
+
+    parsed = [_parse_address(a) for a in addresses]
+    countries = Counter(p["country"] for p in parsed if p["country"])
+    regions_all = Counter(p["region"] for p in parsed if p["region"])
+    cities_all = Counter(p["city"] for p in parsed if p["city"])
+
+    top_country = countries.most_common(1)[0][0] if countries else None
+    in_country = [p for p in parsed if p["country"] == top_country] if top_country else parsed
+    regions_c = Counter(p["region"] for p in in_country if p["region"])
+    top_region = regions_c.most_common(1)[0][0] if regions_c else None
+    in_region = [p for p in in_country if p["region"] == top_region] if top_region else in_country
+    cities_c = Counter(p["city"] for p in in_region if p["city"]) or Counter(p["city"] for p in in_country if p["city"])
+    top_city = cities_c.most_common(1)[0][0] if cities_c else None
+
+    return {
+        "based_on_places": len(addresses),
+        "country": top_country,
+        "region": top_region,
+        "city": top_city,
+        "countries": [{"name": n, "count": c} for n, c in countries.most_common(5)],
+        "regions": [{"name": n, "count": c} for n, c in regions_all.most_common(5)],
+        "cities": [{"name": n, "count": c} for n, c in cities_all.most_common(5)],
+    }
+
+
 async def _maps_reviews(client, gaia_id: str) -> dict[str, Any]:
     """Oldest/newest public Maps review dates for the account.
 
@@ -153,14 +230,14 @@ async def _maps_reviews(client, gaia_id: str) -> dict[str, Any]:
     except Exception as exc:
         return {"error": f"parse: {type(exc).__name__}"}
 
+    addresses = _extract_addresses(data)
     micros = _scan_epoch_micros(data)
-    if not micros:
-        return {"count_with_dates": 0, "oldest_date": None, "newest_date": None}
     to_iso = lambda m: datetime.fromtimestamp(m / 1_000_000, tz=timezone.utc).replace(tzinfo=None, microsecond=0).isoformat() + "Z"
     return {
         "count_with_dates": len(micros),
-        "oldest_date": to_iso(min(micros)),
-        "newest_date": to_iso(max(micros)),
+        "oldest_date": to_iso(min(micros)) if micros else None,
+        "newest_date": to_iso(max(micros)) if micros else None,
+        "_addresses": addresses,
     }
 
 
@@ -178,6 +255,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
     from ghunt import globals as gb
 
     photos: list[dict[str, Any]] = []
+    addresses: list[str] = []
     token = ""
     pages = 0
     while True:
@@ -196,6 +274,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
             break
         if len(data) <= 22 or not data[22]:
             break
+        addresses += _extract_addresses(data[22])
         block = data[22]
         items = block[1] if len(block) > 1 else None
         if not items:
@@ -230,6 +309,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
         "oldest_date": min(dates) if dates else None,
         "newest_date": max(dates) if dates else None,
         "items": photos[:cap],
+        "_addresses": addresses,
     }
 
 
@@ -372,6 +452,26 @@ async def _probe(email: str) -> dict[str, Any]:
             maps["reviews_dates"] = await _maps_reviews(client, person.personId)
         except Exception as exc:
             maps["reviews_dates"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+        # Coarse location estimate: aggregate the places behind reviews + photos
+        # to country / region / city only (no coordinates, no raw addresses). This
+        # is a location-consistency signal for fraud checks on sign-up, not a way
+        # to pinpoint a person.
+        try:
+            all_addresses: list[str] = []
+            for sub in ("contributed_photos", "reviews_dates"):
+                blk = maps.get(sub)
+                if isinstance(blk, dict):
+                    all_addresses += blk.pop("_addresses", [])
+            if all_addresses:
+                maps["location"] = _aggregate_location(all_addresses)
+        except Exception as exc:
+            maps["location"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+        # Drop any leftover internal keys so they never reach the response.
+        for sub in ("contributed_photos", "reviews_dates"):
+            blk = maps.get(sub)
+            if isinstance(blk, dict):
+                blk.pop("_addresses", None)
         result["maps"] = maps
 
         try:
