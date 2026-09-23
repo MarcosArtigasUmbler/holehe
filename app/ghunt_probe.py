@@ -132,6 +132,34 @@ def _scan_epoch_micros(obj: Any) -> list[int]:
     return found
 
 
+def _extract_display_name(obj: Any, gaia_id: str) -> str | None:
+    """Recover the account's Google display name from a Maps response.
+
+    The People API no longer returns names, but each contribution carries an
+    author tuple [name, avatar_url, [contrib_url], gaia_id, ...]; we key on the
+    gaia id and take the accompanying name."""
+    from collections import Counter
+
+    names: Counter = Counter()
+
+    def rec(o: Any) -> None:
+        if isinstance(o, list):
+            if (
+                len(o) >= 4
+                and o[3] == gaia_id
+                and isinstance(o[0], str)
+                and o[0].strip()
+                and isinstance(o[1], str)
+                and "googleusercontent" in o[1]
+            ):
+                names[o[0].strip()] += 1
+            for v in o:
+                rec(v)
+
+    rec(obj)
+    return names.most_common(1)[0][0] if names else None
+
+
 def _extract_addresses(obj: Any) -> list[str]:
     """Collect address-like strings (>=2 commas, contains a digit)."""
     found: list[str] = []
@@ -238,6 +266,7 @@ async def _maps_reviews(client, gaia_id: str) -> dict[str, Any]:
         "oldest_date": to_iso(min(micros)) if micros else None,
         "newest_date": to_iso(max(micros)) if micros else None,
         "_addresses": addresses,
+        "_name": _extract_display_name(data, gaia_id),
     }
 
 
@@ -256,6 +285,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
 
     photos: list[dict[str, Any]] = []
     addresses: list[str] = []
+    name: str | None = None
     token = ""
     pages = 0
     while True:
@@ -275,6 +305,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
         if len(data) <= 22 or not data[22]:
             break
         addresses += _extract_addresses(data[22])
+        name = name or _extract_display_name(data, gaia_id)
         block = data[22]
         items = block[1] if len(block) > 1 else None
         if not items:
@@ -310,6 +341,7 @@ async def _maps_photos(client, gaia_id: str, cap: int = 40) -> dict[str, Any]:
         "newest_date": max(dates) if dates else None,
         "items": photos[:cap],
         "_addresses": addresses,
+        "_name": name,
     }
 
 
@@ -417,6 +449,7 @@ async def _probe(email: str) -> dict[str, Any]:
             "found": True,
             "public_profile": True,
             "gaia_id": person.personId,
+            "display_name": None,
             "last_profile_edit": _dt(last_edit),
             "has_custom_profile_picture": bool(photo and not photo.isDefault),
             "profile_picture_url": photo.url if (photo and not photo.isDefault) else None,
@@ -467,10 +500,14 @@ async def _probe(email: str) -> dict[str, Any]:
                 maps["location"] = _aggregate_location(all_addresses)
         except Exception as exc:
             maps["location"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
-        # Drop any leftover internal keys so they never reach the response.
+        # Google display name: the People API no longer returns it, so take it
+        # from whichever Maps response surfaced it.
         for sub in ("contributed_photos", "reviews_dates"):
             blk = maps.get(sub)
             if isinstance(blk, dict):
+                nm = blk.pop("_name", None)
+                if nm and not result.get("display_name"):
+                    result["display_name"] = nm
                 blk.pop("_addresses", None)
         result["maps"] = maps
 
